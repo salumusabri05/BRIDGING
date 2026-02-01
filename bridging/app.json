@@ -38,6 +38,12 @@
             "backgroundColor": "#000000"
           }
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Bridging Silence to access your camera for sign language recognition."
+        }
       ]
     ],
     "experiments": {

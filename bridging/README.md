@@ -1,50 +1,261 @@
-# Welcome to your Expo app 👋
+# Bridging Silence 🤟
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+**Tanzanian Sign Language Recognition App** - Converting sign language to text and speech using AI-powered hand landmark detection.
 
-## Get started
+## 🎯 Overview
 
-1. Install dependencies
+Bridging Silence is a React Native mobile application built with Expo that enables real-time recognition of Tanzanian Sign Language (TSL). The app captures hand gestures through the device camera, processes them using MediaPipe for landmark detection, and sends the data to a machine learning model for sign prediction.
 
+## ✨ Features
+
+- 🎥 **Real-time Video Detection** - Continuous hand tracking and recognition
+- 📸 **Live Camera Feed** - Front/back camera with real-time preview
+- 🤖 **AI-Powered Recognition** - MediaPipe Hands detects 21 hand landmarks per frame
+- ⚡ **Frame Throttling** - Optimized processing (10 FPS) for performance and battery
+- 🔊 **Text-to-Speech** - Converts recognized signs to spoken words
+- 📊 **Live Confidence Meter** - Visual feedback on recognition accuracy
+- 📝 **History Tracking** - Builds words from sequential letter signs
+- 🎨 **Hand Visualization** - Real-time overlay showing detected hand skeleton
+- 🔴 **Live Indicator** - Shows detection status and FPS counter
+- 🌙 **Dark/Light Mode** - Automatic theme switching
+
+## 🏗️ Architecture
+
+```
+┌─────────────────┐
+│   Camera View   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   MediaPipe     │ ← Detects 21 landmarks
+│   Hands API     │   (x, y, z) × 21
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Normalization  │ ← Min-max scaling
+│   (63 features) │   to [0, 1] range
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   Backend API   │ ← ML model prediction
+│ (TSL Classifier)│   returns letter + confidence
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Text-to-Speech  │ ← Spoken output
+└─────────────────┘
+```
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Node.js 18+ 
+- npm or yarn
+- Expo CLI (`npm install -g expo-cli`)
+- iOS Simulator or Android Emulator (or physical device with Expo Go)
+
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone <your-repo-url>
+   cd bridging
+   ```
+
+2. **Install dependencies**
    ```bash
    npm install
    ```
 
-2. Start the app
-
+3. **Start the development server**
    ```bash
    npx expo start
    ```
 
-In the output, you'll find options to open the app in a
+4. **Run on your device**
+   - Scan the QR code with Expo Go (Android/iOS)
+   - Or press `a` for Android emulator
+   - Or press `i` for iOS simulator
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## 📱 Usage
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+1. **Grant Camera Permission** - Allow camera access when prompted
+2. **Position Your Hand** - Place your hand in front of the camera
+3. **Capture Gesture** - Tap the blue capture button
+4. **View Results** - See the predicted letter and confidence score
+5. **Hear It Spoken** - The app automatically speaks the recognized letter
+6. **Build Words** - Capture multiple letters to form words
+7. **Speak Word** - Tap "Speak" to hear the complete word
 
-## Get a fresh project
+## 🛠️ Technical Stack
 
-When you're ready, run:
+### Frontend
+- **React Native** - Cross-platform mobile framework
+- **Expo** - Development platform and SDK
+- **TypeScript** - Type-safe JavaScript
+- **Expo Camera** - Camera access and frame capture
+- **Expo Speech** - Text-to-speech synthesis
+- **react-native-svg** - Hand skeleton visualization
 
-```bash
-npm run reset-project
+### Computer Vision
+- **MediaPipe Hands** - Hand landmark detection
+- **@mediapipe/tasks-vision** - Web-compatible MediaPipe library
+
+### Backend Integration
+- **Axios** - HTTP client for API requests
+- **Backend URL**: `https://production-model.onrender.com`
+- **Model**: MLP Classifier for TSL recognition
+
+## 📂 Project Structure
+
+```
+bridging/
+├── app/
+│   ├── (tabs)/
+│   │   ├── camera.tsx       # Main camera screen
+│   │   ├── index.tsx        # Home screen
+│   │   ├── explore.tsx      # About screen
+│   │   └── _layout.tsx      # Tab navigation
+│   ├── _layout.tsx          # Root layout
+│   └── modal.tsx
+├── components/
+│   ├── PredictionDisplay.tsx    # Results UI
+│   ├── HandVisualization.tsx    # Hand skeleton overlay
+│   └── ...
+├── services/
+│   ├── api.service.ts           # Backend API integration
+│   ├── mediapipe.service.ts     # Hand detection service
+│   └── speech.service.ts        # Text-to-speech
+├── utils/
+│   └── landmark-processor.ts    # Data normalization
+├── types/
+│   └── tsl.types.ts            # TypeScript definitions
+├── constants/
+│   ├── api.ts                  # API configuration
+│   └── mediapipe.ts            # MediaPipe settings
+├── docs/
+│   ├── instructions.md         # TSL data format spec
+│   ├── data.md                 # Backend API info
+│   └── app.md                  # App overview
+└── package.json
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## 🔧 Configuration
 
-## Learn more
+### API Endpoint
+Update the backend URL in `constants/api.ts`:
+```typescript
+export const API_CONFIG = {
+  BASE_URL: 'https://production-model.onrender.com',
+  ENDPOINTS: {
+    PREDICT: '/predict',
+  },
+};
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+### MediaPipe Settings
+Adjust detection thresholds in `constants/mediapipe.ts`:
+```typescript
+export const MEDIAPIPE_CONFIG = {
+  MIN_DETECTION_CONFIDENCE: 0.7,
+  MIN_TRACKING_CONFIDENCE: 0.5,
+  MAX_NUM_HANDS: 1,
+};
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## 📊 Data Format
 
-## Join the community
+### Input (to Backend)
+```json
+{
+  "landmarks": [
+    [0.338775, 0.707677, 0.000000],  // Wrist
+    [0.359596, 0.690019, -0.064400], // Thumb CMC
+    // ... 19 more landmarks
+  ]
+}
+```
 
-Join our community of developers creating universal apps.
+### Output (from Backend)
+```json
+{
+  "letter": "A",
+  "confidence": 0.95
+}
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+For detailed data specifications, see [docs/instructions.md](docs/instructions.md).
+
+## 🧪 Testing
+
+### Run on Android
+```bash
+npm run android
+```
+
+### Run on iOS
+```bash
+npm run ios
+```
+
+### Run on Web
+```bash
+npm run web
+```
+
+## 🐛 Troubleshooting
+
+### Camera Not Working
+- Ensure camera permissions are granted
+- Restart the Expo development server
+- Check if camera is working in another app
+
+### Detection Issues
+- Improve lighting conditions
+- Keep hand fully visible in frame
+- Use plain background
+- Ensure hand is not too close or far from camera
+
+### API Connection Errors
+- Check internet connection
+- Verify backend URL is correct
+- Check backend server status
+
+## 🚧 Known Limitations
+
+- **MediaPipe Web Context**: Current implementation uses mock landmarks. Full MediaPipe integration requires native modules or web view context.
+- **Static Signs Only**: Currently supports static gestures, not dynamic/motion-based signs.
+- **Single Hand**: Only one hand is detected at a time.
+
+## 🔮 Future Enhancements
+
+- [ ] Native MediaPipe integration for real-time detection
+- [ ] Support for dynamic/motion-based signs
+- [ ] Offline mode with local TensorFlow Lite model
+- [ ] Two-hand sign recognition
+- [ ] Custom sign training
+- [ ] Sign language tutorials
+- [ ] Social features (share signs, challenges)
+
+## 📄 License
+
+This project is licensed under the MIT License.
+
+## 🙏 Acknowledgments
+
+- MediaPipe team for hand landmark detection
+- Expo team for the amazing development platform
+- TSL community for inspiration and feedback
+
+## 📞 Support
+
+For issues, questions, or contributions, please open an issue on GitHub.
+
+---
+
+**Built with ❤️ for the deaf community in Tanzania**
