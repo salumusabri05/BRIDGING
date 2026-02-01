@@ -1,0 +1,1 @@
+this is app called briding silence , convertiong sign language to text and speech and vice versa    
