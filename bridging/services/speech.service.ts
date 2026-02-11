@@ -1,13 +1,36 @@
 /**
  * Text-to-Speech Service
  * Converts predicted letters/words to speech
+ * Supports English and Swahili
  */
 
 import * as Speech from 'expo-speech';
 
+export type SpeechLanguage = 'en' | 'sw';
+
+const LANGUAGE_MAP: Record<SpeechLanguage, string> = {
+    en: 'en-US',
+    sw: 'sw-KE',
+};
+
 class SpeechService {
     private isSpeaking: boolean = false;
     private queue: string[] = [];
+    private currentLanguage: SpeechLanguage = 'sw'; // Default to Swahili
+
+    /**
+     * Set the speech language
+     */
+    setLanguage(lang: SpeechLanguage): void {
+        this.currentLanguage = lang;
+    }
+
+    /**
+     * Get the current speech language
+     */
+    getLanguage(): SpeechLanguage {
+        return this.currentLanguage;
+    }
 
     /**
      * Speak a single letter or word
@@ -17,9 +40,9 @@ class SpeechService {
 
         try {
             await Speech.speak(text, {
-                language: 'en-US',
+                language: LANGUAGE_MAP[this.currentLanguage],
                 pitch: 1.0,
-                rate: 0.85, // Slightly slower for clarity
+                rate: 0.85,
                 ...options,
                 onStart: () => {
                     this.isSpeaking = true;
@@ -41,13 +64,19 @@ class SpeechService {
     }
 
     /**
+     * Speak text in a specific language without changing the default
+     */
+    async speakIn(text: string, lang: SpeechLanguage): Promise<void> {
+        if (!text) return;
+        await this.speak(text, { language: LANGUAGE_MAP[lang] });
+    }
+
+    /**
      * Add text to speech queue
      */
     addToQueue(text: string): void {
         if (!text) return;
-
         this.queue.push(text);
-
         if (!this.isSpeaking) {
             this.processQueue();
         }
@@ -60,7 +89,6 @@ class SpeechService {
         if (this.queue.length === 0 || this.isSpeaking) {
             return;
         }
-
         const text = this.queue.shift();
         if (text) {
             await this.speak(text);
