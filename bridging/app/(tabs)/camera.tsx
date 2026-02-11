@@ -1,9 +1,11 @@
 /**
- * Camera Screen - Premium TSL Recognition
- * Beautiful UI with automatic real-time detection
+ * TSL Camera - Hand Sign Recognition
+ * Capture hand gestures and translate Tanzanian Sign Language
+ * 
+ * Flow: Camera → Photo → MediaPipe (WebView) → Landmarks → API → Prediction → Speech
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     View,
     Text,
@@ -12,163 +14,199 @@ import {
     ActivityIndicator,
     Animated,
     Dimensions,
+    Alert,
 } from 'react-native';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { BlurView } from 'expo-blur';
-import { PredictionDisplay } from '../../components/PredictionDisplay';
-import { HandVisualization } from '../../components/HandVisualization';
+import HandLandmarkDetector, { HandDetectorRef } from '../../components/HandLandmarkDetector';
 import { apiService } from '../../services/api.service';
 import { speechService } from '../../services/speech.service';
-import { videoProcessingService, DEFAULT_VIDEO_CONFIG } from '../../services/video-processing.service';
-import { Landmark, PredictionHistoryItem } from '../../types/tsl.types';
 
-const { width, height } = Dimensions.get('window');
+const { width } = Dimensions.get('window');
 
-export default function CameraScreen() {
+export default function TSLCameraScreen() {
     const [permission, requestPermission] = useCameraPermissions();
     const [facing, setFacing] = useState<CameraType>('front');
-    const [currentLetter, setCurrentLetter] = useState('');
-    const [confidence, setConfidence] = useState(0);
-    const [error, setError] = useState('');
-    const [history, setHistory] = useState<PredictionHistoryItem[]>([]);
-    const [detectedLandmarks, setDetectedLandmarks] = useState<Landmark[]>([]);
+    const [isCapturing, setIsCapturing] = useState(false);
+    const [lastPrediction, setLastPrediction] = useState<string>('');
+    const [confidence, setConfidence] = useState<number>(0);
     const [isSpeechEnabled, setIsSpeechEnabled] = useState(true);
-    const [fps, setFps] = useState(0);
+    const [isDetectorReady, setIsDetectorReady] = useState(false);
+    const [statusText, setStatusText] = useState('Loading hand detector...');
 
-    const cameraRef = useRef<any>(null);
-    const processingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    const lastPredictionRef = useRef<string>('');
-
-    // Animations
-    const pulseAnim = useRef(new Animated.Value(1)).current;
+    const cameraRef = useRef<CameraView>(null);
+    const detectorRef = useRef<HandDetectorRef>(null);
     const fadeAnim = useRef(new Animated.Value(0)).current;
 
-    // Auto-start detection when camera loads
     useEffect(() => {
         if (permission?.granted) {
-            startRealTimeDetection();
-
-            // Fade in animation
             Animated.timing(fadeAnim, {
                 toValue: 1,
                 duration: 800,
                 useNativeDriver: true,
             }).start();
         }
+    }, [permission, fadeAnim]);
 
-        return () => {
-            stopRealTimeDetection();
-        };
-    }, [permission]);
+    /**
+     * Called when MediaPipe model is loaded in WebView
+     */
+    const onDetectorReady = () => {
+        setIsDetectorReady(true);
+        setStatusText('Show your hand sign here');
+        console.log('✅ Hand detector ready');
+    };
 
-    // Pulse animation for active detection
-    useEffect(() => {
-        Animated.loop(
-            Animated.sequence([
-                Animated.timing(pulseAnim, {
-                    toValue: 1.2,
-                    duration: 1000,
-                    useNativeDriver: true,
-                }),
-                Animated.timing(pulseAnim, {
-                    toValue: 1,
-                    duration: 1000,
-                    useNativeDriver: true,
-                }),
-            ])
-        ).start();
-    }, []);
+    /**
+     * Called if detector fails to load
+     */
+    const onDetectorError = (error: string) => {
+        console.error('❌ Detector error:', error);
+        setStatusText('Detector error - use Test API instead');
+    };
 
-    const startRealTimeDetection = useCallback(() => {
-        videoProcessingService.reset();
+    /**
+     * Capture photo and detect hand landmarks
+     */
+    const handleCapture = async () => {
+        if (!cameraRef.current || isCapturing) return;
 
-        processingIntervalRef.current = setInterval(async () => {
-            if (!videoProcessingService.shouldProcessFrame(DEFAULT_VIDEO_CONFIG)) {
-                return;
-            }
-
-            await processVideoFrame();
-        }, DEFAULT_VIDEO_CONFIG.minFrameInterval);
-    }, []);
-
-    const stopRealTimeDetection = useCallback(() => {
-        if (processingIntervalRef.current) {
-            clearInterval(processingIntervalRef.current);
-            processingIntervalRef.current = null;
+        if (!isDetectorReady) {
+            Alert.alert('Please Wait', 'Hand detection model is still loading. This may take a few seconds on first use.');
+            return;
         }
-        videoProcessingService.reset();
-    }, []);
 
-    const processVideoFrame = async () => {
-        if (!cameraRef.current) return;
-
-        videoProcessingService.startProcessing();
+        setIsCapturing(true);
+        setStatusText('Capturing...');
 
         try {
-            // IMPORTANT: Not taking pictures to avoid camera overload
-            // In production, this is where MediaPipe would process the video stream
-            // For now, we simulate detection with mock data
+            // Step 1: Take photo
+            console.log('📸 Taking photo...');
+            const photo = await cameraRef.current.takePictureAsync({
+                quality: 0.8,
+                base64: true,
+            });
 
-            const mockLandmarks = generateMockLandmarks();
-            setDetectedLandmarks(mockLandmarks);
-
-            // Send mock landmarks to API for prediction
-            const response = await apiService.predictSign(mockLandmarks);
-
-            if (response.error) {
-                setError(response.error);
-                videoProcessingService.endProcessing();
+            if (!photo) {
+                Alert.alert('Error', 'Could not take photo. Please try again.');
                 return;
             }
 
-            if (response.letter) {
-                // Only update if letter changed
-                if (response.letter !== lastPredictionRef.current) {
-                    setCurrentLetter(response.letter);
-                    setConfidence(response.confidence || 0.85);
-                    lastPredictionRef.current = response.letter;
+            setStatusText('Detecting hand...');
 
-                    const historyItem: PredictionHistoryItem = {
-                        id: Date.now().toString(),
-                        letter: response.letter,
-                        confidence: response.confidence || 0.85,
-                        timestamp: new Date(),
-                    };
+            // Step 2: Get base64 data
+            const base64Data = photo.base64;
 
-                    setHistory((prev) => [...prev, historyItem].slice(-20));
-
-                    if (isSpeechEnabled) {
-                        speechService.speak(response.letter);
-                    }
-                }
-                setError('');
+            if (!base64Data) {
+                Alert.alert('Error', 'Could not process photo. Please try again.');
+                return;
             }
 
-            setFps(videoProcessingService.getCurrentFPS());
-        } catch (err) {
-            console.error('Frame processing error:', err);
-            setError('Processing error. Retrying...');
+            // Step 3: Send to WebView for hand detection
+            console.log('🤖 Detecting hand landmarks...');
+            const detection = await detectorRef.current?.detectFromBase64(base64Data);
+
+            if (!detection) {
+                setStatusText('Show your hand sign here');
+                Alert.alert(
+                    'No Hand Detected',
+                    'Please show your hand clearly within the blue guide box and try again.',
+                    [{ text: 'OK' }]
+                );
+                return;
+            }
+
+            console.log(`✅ Detected ${detection.landmarks.length} landmarks`);
+            setStatusText('Sending to AI...');
+
+            // Step 4: Send landmarks to API
+            console.log('🚀 Sending landmarks to API...');
+            const response = await apiService.predictSign(detection.landmarks);
+
+            if (response.error) {
+                setStatusText('Show your hand sign here');
+                Alert.alert('Prediction Error', response.error);
+                return;
+            }
+
+            // Step 5: Display result
+            const letter = response.letter || 'Unknown';
+            const conf = response.confidence || detection.confidence;
+
+            setLastPrediction(letter);
+            setConfidence(conf);
+            setStatusText(`Detected: ${letter}`);
+
+            console.log(`🎯 Prediction: ${letter} (${(conf * 100).toFixed(1)}%)`);
+
+            // Step 6: Speak result
+            if (isSpeechEnabled && letter && letter !== 'Unknown') {
+                await speechService.speak(letter);
+            }
+
+        } catch (error) {
+            console.error('❌ Capture error:', error);
+            Alert.alert('Error', 'Something went wrong. Please try again.');
+            setStatusText('Show your hand sign here');
         } finally {
-            videoProcessingService.endProcessing();
+            setIsCapturing(false);
         }
     };
 
-    const handleClear = () => {
-        setHistory([]);
-        setCurrentLetter('');
-        setConfidence(0);
-        setError('');
-        setDetectedLandmarks([]);
-        lastPredictionRef.current = '';
-        speechService.clearQueue();
-    };
+    /**
+     * Test API connection with sample landmarks from API docs
+     */
+    const testAPIConnection = async () => {
+        try {
+            // Sample landmarks from detectionapi.md
+            const sampleLandmarks = [
+                { x: 0.338775, y: 0.707677, z: 0.000000 },
+                { x: 0.359596, y: 0.690019, z: -0.064400 },
+                { x: 0.402614, y: 0.697840, z: -0.079851 },
+                { x: 0.442001, y: 0.742977, z: -0.082639 },
+                { x: 0.478297, y: 0.772598, z: -0.079987 },
+                { x: 0.481200, y: 0.624843, z: -0.038444 },
+                { x: 0.540103, y: 0.598855, z: -0.051450 },
+                { x: 0.579200, y: 0.580494, z: -0.059732 },
+                { x: 0.611820, y: 0.569921, z: -0.064929 },
+                { x: 0.484388, y: 0.664041, z: -0.011230 },
+                { x: 0.522004, y: 0.718519, z: -0.034067 },
+                { x: 0.490152, y: 0.736844, z: -0.042311 },
+                { x: 0.466428, y: 0.731174, z: -0.039971 },
+                { x: 0.479003, y: 0.698777, z: 0.009253 },
+                { x: 0.507311, y: 0.745670, z: -0.019042 },
+                { x: 0.473320, y: 0.753283, z: -0.027947 },
+                { x: 0.456450, y: 0.737558, z: -0.024299 },
+                { x: 0.467371, y: 0.723029, z: 0.025279 },
+                { x: 0.494282, y: 0.756875, z: 0.004044 },
+                { x: 0.473828, y: 0.764333, z: -0.002101 },
+                { x: 0.456327, y: 0.749471, z: 0.000011 },
+            ];
 
-    const handleSpeakWord = () => {
-        const word = history.map((item) => item.letter).join('');
-        if (word) {
-            speechService.speak(word);
+            console.log('🧪 Testing API with sample landmarks...');
+            const response = await apiService.predictSign(sampleLandmarks);
+
+            if (response.error) {
+                Alert.alert('API Error', response.error);
+                return;
+            }
+
+            setLastPrediction(response.letter || 'Unknown');
+            setConfidence(response.confidence || 0);
+
+            if (isSpeechEnabled && response.letter) {
+                await speechService.speak(response.letter);
+            }
+
+            Alert.alert(
+                'API Connected! ✅',
+                `Sign: ${response.letter}\nConfidence: ${((response.confidence || 0) * 100).toFixed(1)}%`,
+                [{ text: 'Great!' }]
+            );
+        } catch (error) {
+            console.error('API test error:', error);
+            Alert.alert('Connection Error', 'Could not reach the prediction server. Check your internet.');
         }
     };
 
@@ -176,52 +214,47 @@ export default function CameraScreen() {
         setFacing((current) => (current === 'back' ? 'front' : 'back'));
     };
 
+    const toggleSpeech = () => {
+        setIsSpeechEnabled((current) => !current);
+    };
+
+    // Loading state
     if (!permission) {
         return (
             <View style={styles.loadingContainer}>
-                <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-                    <LinearGradient
-                        colors={['#3b82f6', '#8b5cf6']}
-                        style={styles.loadingGradient}
-                    >
-                        <ActivityIndicator size="large" color="#fff" />
-                    </LinearGradient>
-                </Animated.View>
+                <ActivityIndicator size="large" color="#0EA5E9" />
             </View>
         );
     }
 
+    // Permission request screen
     if (!permission.granted) {
         return (
             <LinearGradient
-                colors={['#1e1b4b', '#312e81', '#3b82f6']}
+                colors={['#0C4A6E', '#0891B2', '#0EA5E9']}
                 style={styles.permissionContainer}
             >
                 <Animated.View style={[styles.permissionContent, { opacity: fadeAnim }]}>
                     <View style={styles.iconWrapper}>
                         <LinearGradient
-                            colors={['#3b82f6', '#8b5cf6']}
+                            colors={['#0EA5E9', '#06B6D4']}
                             style={styles.iconGradient}
                         >
                             <Ionicons name="camera" size={48} color="#fff" />
                         </LinearGradient>
                     </View>
 
-                    <Text style={styles.permissionTitle}>Camera Access</Text>
-                    <Text style={styles.permissionSubtitle}>Required for Sign Language Detection</Text>
+                    <Text style={styles.permissionTitle}>Camera Access Needed</Text>
                     <Text style={styles.permissionText}>
-                        Bridging Silence uses your camera to detect hand gestures in real-time and translate them into text and speech.
+                        We need camera access to see your hand signs and translate them
                     </Text>
 
-                    <TouchableOpacity onPress={requestPermission}>
+                    <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
                         <LinearGradient
-                            colors={['#3b82f6', '#8b5cf6']}
-                            start={{ x: 0, y: 0 }}
-                            end={{ x: 1, y: 1 }}
-                            style={styles.permissionButton}
+                            colors={['#0EA5E9', '#06B6D4']}
+                            style={styles.permissionButtonGradient}
                         >
-                            <Text style={styles.permissionButtonText}>Grant Access</Text>
-                            <Ionicons name="arrow-forward" size={20} color="#fff" />
+                            <Text style={styles.permissionButtonText}>Allow Camera</Text>
                         </LinearGradient>
                     </TouchableOpacity>
                 </Animated.View>
@@ -229,126 +262,139 @@ export default function CameraScreen() {
         );
     }
 
+    // Main camera screen
     return (
         <View style={styles.container}>
-            {/* Camera View */}
-            <CameraView ref={cameraRef} style={styles.camera} facing={facing}>
-                {/* Gradient Overlay */}
-                <LinearGradient
-                    colors={['rgba(0,0,0,0.3)', 'transparent', 'rgba(0,0,0,0.6)']}
-                    style={styles.gradientOverlay}
-                    pointerEvents="none"
-                />
+            {/* Hidden WebView that runs MediaPipe hand detection */}
+            <HandLandmarkDetector
+                ref={detectorRef}
+                onReady={onDetectorReady}
+                onError={onDetectorError}
+            />
 
-                {/* Hand Visualization */}
-                {detectedLandmarks.length > 0 && (
-                    <HandVisualization
-                        landmarks={detectedLandmarks}
-                        width={width}
-                        height={height * 0.6}
-                    />
-                )}
-
-                {/* Top Bar */}
-                <BlurView intensity={80} tint="dark" style={styles.topBar}>
-                    <View style={styles.statusBadge}>
-                        <Animated.View
-                            style={[
-                                styles.liveDot,
-                                { transform: [{ scale: pulseAnim }] }
-                            ]}
-                        />
-                        <Text style={styles.liveText}>LIVE</Text>
-                        <Text style={styles.fpsText}>{fps} FPS</Text>
-                    </View>
-
-                    <View style={styles.topControls}>
-                        <TouchableOpacity
-                            style={styles.topButton}
-                            onPress={() => setIsSpeechEnabled(!isSpeechEnabled)}
-                        >
-                            <Ionicons
-                                name={isSpeechEnabled ? 'volume-high' : 'volume-mute'}
-                                size={22}
-                                color="#fff"
-                            />
-                        </TouchableOpacity>
-
-                        <TouchableOpacity style={styles.topButton} onPress={toggleCamera}>
-                            <Ionicons name="camera-reverse" size={22} color="#fff" />
-                        </TouchableOpacity>
-                    </View>
-                </BlurView>
-
-                {/* Detection Frame */}
-                <View style={styles.detectionFrame} pointerEvents="none">
-                    <View style={[styles.frameCorner, styles.topLeft]} />
-                    <View style={[styles.frameCorner, styles.topRight]} />
-                    <View style={[styles.frameCorner, styles.bottomLeft]} />
-                    <View style={[styles.frameCorner, styles.bottomRight]} />
-                </View>
-            </CameraView>
-
-            {/* Bottom Panel */}
-            <Animated.View style={[styles.bottomPanel, { opacity: fadeAnim }]}>
-                <BlurView intensity={100} tint="dark" style={styles.blurContainer}>
-                    {/* Prediction Display */}
-                    <PredictionDisplay
-                        currentLetter={currentLetter}
-                        confidence={confidence}
-                        history={history}
-                        error={error}
-                    />
-
-                    {/* Action Bar */}
-                    <View style={styles.actionBar}>
-                        <TouchableOpacity
-                            style={[styles.actionBtn, styles.clearBtn]}
-                            onPress={handleClear}
-                            disabled={history.length === 0}
-                        >
-                            <LinearGradient
-                                colors={history.length > 0 ? ['#ef4444', '#dc2626'] : ['#4b5563', '#374151']}
-                                style={styles.btnGradient}
+            <Animated.View style={[styles.cameraWrapper, { opacity: fadeAnim }]}>
+                <CameraView
+                    ref={cameraRef}
+                    style={styles.camera}
+                    facing={facing}
+                >
+                    <View style={styles.overlay}>
+                        {/* Top Controls */}
+                        <View style={styles.topBar}>
+                            <TouchableOpacity
+                                style={styles.topButton}
+                                onPress={toggleCamera}
                             >
-                                <Ionicons name="trash-outline" size={20} color="#fff" />
-                                <Text style={styles.btnText}>Clear</Text>
-                            </LinearGradient>
-                        </TouchableOpacity>
+                                <LinearGradient
+                                    colors={['rgba(14, 165, 233, 0.9)', 'rgba(6, 182, 212, 0.9)']}
+                                    style={styles.topButtonGradient}
+                                >
+                                    <Ionicons name="camera-reverse" size={26} color="#fff" />
+                                </LinearGradient>
+                            </TouchableOpacity>
 
-                        <TouchableOpacity
-                            style={[styles.actionBtn, styles.speakBtn]}
-                            onPress={handleSpeakWord}
-                            disabled={history.length === 0}
-                        >
-                            <LinearGradient
-                                colors={history.length > 0 ? ['#10b981', '#059669'] : ['#4b5563', '#374151']}
-                                style={styles.btnGradient}
+                            {/* Status indicator */}
+                            <View style={styles.statusBadge}>
+                                {!isDetectorReady && (
+                                    <ActivityIndicator size="small" color="#0EA5E9" style={{ marginRight: 6 }} />
+                                )}
+                                <View style={[styles.statusDot, isDetectorReady ? styles.statusReady : styles.statusLoading]} />
+                                <Text style={styles.statusLabel}>
+                                    {isDetectorReady ? 'Ready' : 'Loading'}
+                                </Text>
+                            </View>
+
+                            <TouchableOpacity
+                                style={styles.topButton}
+                                onPress={toggleSpeech}
                             >
-                                <Ionicons name="megaphone" size={20} color="#fff" />
-                                <Text style={styles.btnText}>Speak Word</Text>
-                            </LinearGradient>
-                        </TouchableOpacity>
+                                <LinearGradient
+                                    colors={isSpeechEnabled
+                                        ? ['rgba(14, 165, 233, 0.9)', 'rgba(6, 182, 212, 0.9)']
+                                        : ['rgba(156, 163, 175, 0.9)', 'rgba(107, 114, 128, 0.9)']
+                                    }
+                                    style={styles.topButtonGradient}
+                                >
+                                    <Ionicons
+                                        name={isSpeechEnabled ? 'volume-high' : 'volume-mute'}
+                                        size={26}
+                                        color="#fff"
+                                    />
+                                </LinearGradient>
+                            </TouchableOpacity>
+                        </View>
+
+                        {/* Hand Guide Window */}
+                        <View style={styles.centerGuide}>
+                            <View style={styles.guideBorder} />
+                            <Text style={styles.guideText}>{statusText}</Text>
+                        </View>
+
+                        {/* Result Display */}
+                        {lastPrediction !== '' && (
+                            <View style={styles.resultContainer}>
+                                <LinearGradient
+                                    colors={['rgba(14, 165, 233, 0.95)', 'rgba(6, 182, 212, 0.95)']}
+                                    style={styles.resultGradient}
+                                >
+                                    <Text style={styles.resultLetter}>{lastPrediction}</Text>
+                                    <Text style={styles.resultConfidence}>
+                                        {(confidence * 100).toFixed(0)}% confident
+                                    </Text>
+                                </LinearGradient>
+                            </View>
+                        )}
+
+                        {/* Bottom Controls */}
+                        <View style={styles.bottomBar}>
+                            {/* Test API - left */}
+                            <TouchableOpacity
+                                style={styles.sideButton}
+                                onPress={testAPIConnection}
+                            >
+                                <LinearGradient
+                                    colors={['rgba(14, 165, 233, 0.9)', 'rgba(6, 182, 212, 0.9)']}
+                                    style={styles.sideButtonGradient}
+                                >
+                                    <Ionicons name="cloud-done" size={22} color="#fff" />
+                                    <Text style={styles.sideButtonText}>Test</Text>
+                                </LinearGradient>
+                            </TouchableOpacity>
+
+                            {/* Capture Button - center */}
+                            <TouchableOpacity
+                                style={styles.captureButton}
+                                onPress={handleCapture}
+                                disabled={isCapturing}
+                            >
+                                <LinearGradient
+                                    colors={isCapturing
+                                        ? ['#6B7280', '#9CA3AF']
+                                        : ['#0EA5E9', '#06B6D4']
+                                    }
+                                    style={styles.captureGradient}
+                                >
+                                    {isCapturing ? (
+                                        <ActivityIndicator size="large" color="#fff" />
+                                    ) : (
+                                        <View style={styles.captureContent}>
+                                            <Ionicons name="hand-left" size={32} color="#fff" />
+                                            <Text style={styles.captureText}>Capture</Text>
+                                        </View>
+                                    )}
+                                </LinearGradient>
+                            </TouchableOpacity>
+
+                            {/* Spacer for symmetry */}
+                            <View style={styles.sideButton}>
+                                <View style={styles.sideButtonPlaceholder} />
+                            </View>
+                        </View>
                     </View>
-                </BlurView>
+                </CameraView>
             </Animated.View>
         </View>
     );
-}
-
-function generateMockLandmarks(): Landmark[] {
-    const landmarks: Landmark[] = [];
-    const baseX = 0.4 + (Math.random() - 0.5) * 0.1;
-    const baseY = 0.4 + (Math.random() - 0.5) * 0.1;
-
-    for (let i = 0; i < 21; i++) {
-        landmarks.push({
-            x: baseX + (Math.random() - 0.5) * 0.3,
-            y: baseY + (Math.random() - 0.5) * 0.3,
-            z: (Math.random() - 0.5) * 0.1,
-        });
-    }
-    return landmarks;
 }
 
 const styles = StyleSheet.create({
@@ -356,22 +402,9 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: '#000',
     },
-    camera: {
-        flex: 1,
-    },
-    gradientOverlay: {
-        ...StyleSheet.absoluteFillObject,
-    },
     loadingContainer: {
         flex: 1,
-        backgroundColor: '#0f172a',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    loadingGradient: {
-        width: 80,
-        height: 80,
-        borderRadius: 40,
+        backgroundColor: '#000',
         justifyContent: 'center',
         alignItems: 'center',
     },
@@ -379,15 +412,14 @@ const styles = StyleSheet.create({
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        padding: 32,
+        padding: 24,
     },
     permissionContent: {
         alignItems: 'center',
-        gap: 20,
         maxWidth: 400,
     },
     iconWrapper: {
-        marginBottom: 16,
+        marginBottom: 32,
     },
     iconGradient: {
         width: 100,
@@ -397,162 +429,191 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     permissionTitle: {
-        fontSize: 32,
+        fontSize: 28,
         fontWeight: 'bold',
         color: '#fff',
+        marginBottom: 12,
         textAlign: 'center',
-    },
-    permissionSubtitle: {
-        fontSize: 16,
-        color: '#a5b4fc',
-        textAlign: 'center',
-        fontWeight: '600',
     },
     permissionText: {
         fontSize: 16,
-        color: '#cbd5e1',
+        color: 'rgba(255, 255, 255, 0.9)',
         textAlign: 'center',
+        marginBottom: 32,
         lineHeight: 24,
     },
     permissionButton: {
-        flexDirection: 'row',
+        width: '100%',
+    },
+    permissionButtonGradient: {
+        paddingVertical: 18,
+        paddingHorizontal: 48,
+        borderRadius: 16,
         alignItems: 'center',
-        gap: 12,
-        paddingHorizontal: 32,
-        paddingVertical: 16,
-        borderRadius: 30,
-        marginTop: 16,
     },
     permissionButtonText: {
-        color: '#fff',
         fontSize: 18,
         fontWeight: 'bold',
+        color: '#fff',
+    },
+    cameraWrapper: {
+        flex: 1,
+    },
+    camera: {
+        flex: 1,
+    },
+    overlay: {
+        flex: 1,
+        backgroundColor: 'transparent',
     },
     topBar: {
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        paddingTop: 48,
+        paddingTop: 60,
         paddingHorizontal: 20,
-        paddingBottom: 16,
+    },
+    topButton: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        elevation: 5,
+    },
+    topButtonGradient: {
+        width: 52,
+        height: 52,
+        borderRadius: 26,
+        justifyContent: 'center',
+        alignItems: 'center',
     },
     statusBadge: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 8,
-        backgroundColor: 'rgba(239, 68, 68, 0.9)',
-        paddingHorizontal: 16,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        paddingHorizontal: 14,
         paddingVertical: 8,
         borderRadius: 20,
     },
-    liveDot: {
+    statusDot: {
         width: 8,
         height: 8,
         borderRadius: 4,
-        backgroundColor: '#fff',
+        marginRight: 6,
     },
-    liveText: {
+    statusReady: {
+        backgroundColor: '#22C55E',
+    },
+    statusLoading: {
+        backgroundColor: '#F59E0B',
+    },
+    statusLabel: {
         color: '#fff',
-        fontSize: 14,
-        fontWeight: 'bold',
-        letterSpacing: 1,
-    },
-    fpsText: {
-        color: '#fff',
-        fontSize: 12,
-        opacity: 0.9,
-    },
-    topControls: {
-        flexDirection: 'row',
-        gap: 12,
-    },
-    topButton: {
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        backgroundColor: 'rgba(255, 255, 255, 0.2)',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    detectionFrame: {
-        position: 'absolute',
-        top: '20%',
-        left: '10%',
-        right: '10%',
-        bottom: '40%',
-    },
-    frameCorner: {
-        position: 'absolute',
-        width: 30,
-        height: 30,
-        borderColor: '#3b82f6',
-        borderWidth: 3,
-    },
-    topLeft: {
-        top: 0,
-        left: 0,
-        borderRightWidth: 0,
-        borderBottomWidth: 0,
-        borderTopLeftRadius: 8,
-    },
-    topRight: {
-        top: 0,
-        right: 0,
-        borderLeftWidth: 0,
-        borderBottomWidth: 0,
-        borderTopRightRadius: 8,
-    },
-    bottomLeft: {
-        bottom: 0,
-        left: 0,
-        borderRightWidth: 0,
-        borderTopWidth: 0,
-        borderBottomLeftRadius: 8,
-    },
-    bottomRight: {
-        bottom: 0,
-        right: 0,
-        borderLeftWidth: 0,
-        borderTopWidth: 0,
-        borderBottomRightRadius: 8,
-    },
-    bottomPanel: {
-        position: 'absolute',
-        bottom: 0,
-        left: 0,
-        right: 0,
-    },
-    blurContainer: {
-        padding: 20,
-        paddingBottom: 32,
-    },
-    actionBar: {
-        flexDirection: 'row',
-        gap: 12,
-        marginTop: 16,
-    },
-    actionBtn: {
-        flex: 1,
-        height: 56,
-        borderRadius: 16,
-        overflow: 'hidden',
-    },
-    clearBtn: {},
-    speakBtn: {},
-    btnGradient: {
-        flex: 1,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-    },
-    btnText: {
-        color: '#fff',
-        fontSize: 16,
+        fontSize: 13,
         fontWeight: '600',
+    },
+    centerGuide: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingVertical: 30,
+    },
+    guideBorder: {
+        width: width * 0.85,
+        height: width * 0.85,
+        borderWidth: 3,
+        borderColor: 'rgba(14, 165, 233, 0.6)',
+        borderRadius: 24,
+        borderStyle: 'dashed',
+    },
+    guideText: {
+        marginTop: 16,
+        fontSize: 17,
+        color: '#fff',
+        fontWeight: '600',
+        textShadowColor: 'rgba(0, 0, 0, 0.8)',
+        textShadowOffset: { width: 0, height: 2 },
+        textShadowRadius: 4,
+        textAlign: 'center',
+    },
+    resultContainer: {
+        position: 'absolute',
+        top: 130,
+        left: 20,
+        right: 20,
+    },
+    resultGradient: {
+        padding: 20,
+        borderRadius: 20,
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 8,
+    },
+    resultLetter: {
+        fontSize: 52,
+        fontWeight: 'bold',
+        color: '#fff',
+        marginBottom: 4,
+    },
+    resultConfidence: {
+        fontSize: 16,
+        color: 'rgba(255, 255, 255, 0.95)',
+        fontWeight: '500',
+    },
+    bottomBar: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingBottom: 100,
+        paddingHorizontal: 24,
+    },
+    sideButton: {
+        width: 70,
+        alignItems: 'center',
+    },
+    sideButtonGradient: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 12,
+        paddingHorizontal: 14,
+        borderRadius: 16,
+        gap: 2,
+    },
+    sideButtonText: {
+        color: '#fff',
+        fontSize: 11,
+        fontWeight: '600',
+    },
+    sideButtonPlaceholder: {
+        width: 60,
+        height: 60,
+    },
+    captureButton: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.4,
+        shadowRadius: 12,
+        elevation: 12,
+    },
+    captureGradient: {
+        width: 88,
+        height: 88,
+        borderRadius: 44,
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 4,
+        borderColor: '#fff',
+    },
+    captureContent: {
+        alignItems: 'center',
+        gap: 2,
+    },
+    captureText: {
+        color: '#fff',
+        fontSize: 11,
+        fontWeight: 'bold',
     },
 });

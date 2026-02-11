@@ -5,8 +5,9 @@
 
 import { Platform } from 'react-native';
 
-const tintColorLight = '#0a7ea4';
-const tintColorDark = '#fff';
+// Sea blue theme colors for Bridging Silence
+const tintColorLight = '#0EA5E9'; // Sea blue
+const tintColorDark = '#06B6D4'; // Lighter sea blue for dark mode
 
 export const Colors = {
   light: {

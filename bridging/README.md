@@ -2,11 +2,39 @@
 
 **Tanzanian Sign Language Recognition App** - Converting sign language to text and speech using AI-powered hand landmark detection.
 
+## ⚠️ PROJECT STATUS - IN ACTIVE DEVELOPMENT
+
+**Current Phase:** Hand Detection Implementation
+
+### ✅ What Currently Works:
+- Beautiful camera UI with smooth animations
+- Backend API integration and communication
+- Text-to-speech functionality
+- User interface and navigation
+- Camera permissions and controls
+
+### 🚧 Under Active Development:
+- **Real-time hand detection** (implementing TensorFlow Lite)
+- **Live sign recognition** (pending hand detection completion)
+- **Hand landmark visualization** (pending hand detection)
+
+### 📅 Development Timeline:
+- **Phase 1** (Current): TensorFlow Lite integration - In Progress
+- **Phase 2** (Next 2 weeks): End-to-end testing and optimization
+- **Phase 3** (1 month): Beta testing with users
+- **Phase 4** (6 weeks): Production release
+
+**Note:** The app's core feature (hand detection) is being reimplemented with TensorFlow Lite for better performance and accuracy. The previous MediaPipe WebView approach had architectural limitations.
+
+---
+
+# Original Vision & Target Architecture
+
 ## 🎯 Overview
 
-Bridging Silence is a React Native mobile application built with Expo that enables real-time recognition of Tanzanian Sign Language (TSL). The app captures hand gestures through the device camera, processes them using MediaPipe for landmark detection, and sends the data to a machine learning model for sign prediction.
+Bridging Silence is a React Native mobile application built with Expo that will enable real-time recognition of Tanzanian Sign Language (TSL). The app will capture hand gestures through the device camera, process them using TensorFlow Lite for landmark detection, and send the data to a machine learning model for sign prediction.
 
-## ✨ Features
+## ✨ Planned Features
 
 - 🎥 **Real-time Video Detection** - Continuous hand tracking and recognition
 - 📸 **Live Camera Feed** - Front/back camera with real-time preview
@@ -226,13 +254,14 @@ npm run web
 - Verify backend URL is correct
 - Check backend server status
 
-## 🚧 Known Limitations
+## 🚧 Known Current Limitations
 
-- **MediaPipe Web Context**: Current implementation uses mock landmarks. Full MediaPipe integration requires native modules or web view context.
-- **Static Signs Only**: Currently supports static gestures, not dynamic/motion-based signs.
-- **Single Hand**: Only one hand is detected at a time.
+- **Hand Detection**: Not yet fully implemented - transitioning from MediaPipe WebView to TensorFlow Lite native
+- **Real-time Recognition**: Pending hand detection implementation
+- **Static Signs Only**: Will initially support static gestures, dynamic/motion-based signs planned for v2.0
+- **Single Hand**: Currently designed for one hand detection at a time
 
-## 🔮 Future Enhancements
+## 🔮 Future Enhancements (Post-Launch)
 
 - [ ] Native MediaPipe integration for real-time detection
 - [ ] Support for dynamic/motion-based signs
