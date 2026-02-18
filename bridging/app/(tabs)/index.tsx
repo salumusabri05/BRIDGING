@@ -51,26 +51,21 @@ export default function HomeScreen() {
     useEffect(() => {
         // Staggered entrance animation
         Animated.sequence([
-            // Logo bounce in
             Animated.spring(logoScale, {
                 toValue: 1,
                 friction: 6,
                 tension: 80,
                 useNativeDriver: true,
             }),
-            // Title slide in
             Animated.parallel([
                 Animated.timing(titleFade, { toValue: 1, duration: 500, useNativeDriver: true }),
                 Animated.timing(titleSlide, { toValue: 0, duration: 500, useNativeDriver: true }),
             ]),
-            // Subtitle
             Animated.timing(subtitleFade, { toValue: 1, duration: 400, useNativeDriver: true }),
-            // Button
             Animated.parallel([
                 Animated.timing(buttonFade, { toValue: 1, duration: 400, useNativeDriver: true }),
                 Animated.spring(buttonSlide, { toValue: 0, friction: 7, tension: 60, useNativeDriver: true }),
             ]),
-            // Content
             Animated.parallel([
                 Animated.timing(contentFade, { toValue: 1, duration: 500, useNativeDriver: true }),
                 Animated.timing(contentSlide, { toValue: 0, duration: 500, useNativeDriver: true }),
@@ -78,11 +73,15 @@ export default function HomeScreen() {
         ]).start();
     }, [logoScale, titleFade, titleSlide, subtitleFade, buttonFade, buttonSlide, contentFade, contentSlide]);
 
+    const toggleVideo = (id: string) => {
+        setActiveVideo((prev) => (prev === id ? null : id));
+    };
+
     const renderVideoCard = ({ item }: { item: typeof SAMPLE_VIDEOS[0] }) => (
         <TouchableOpacity
             style={styles.videoCard}
             activeOpacity={0.9}
-            onPress={() => setActiveVideo(activeVideo === item.id ? null : item.id)}
+            onPress={() => toggleVideo(item.id)}
         >
             <View style={styles.videoWrapper}>
                 <Video

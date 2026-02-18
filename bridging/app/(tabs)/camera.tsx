@@ -1,7 +1,12 @@
 /**
  * TSL Camera — Hand Sign Recognition + Sentence Builder
  * 
- * Flow: Camera → Photo → MediaPipe (WebView) → Landmarks → API → Letter
+ * Supports two modes:
+ *  • Manual: Tap capture button to detect one sign at a time
+ *  • Auto:   Continuously captures every ~1.5s, compares hand landmarks,
+ *            and only sends to API when the pose has changed significantly.
+ * 
+ * Flow: Camera → Photo → MediaPipe (WebView) → Landmarks → (change?) → API → Letter
  * Letters accumulate into words, words form sentences.
  * User can add spaces, backspace, clear, and speak the result in Swahili.
  */
@@ -17,6 +22,7 @@ import {
     Dimensions,
     Alert,
     ScrollView,
+    Easing,
 } from 'react-native';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,6 +35,28 @@ import type { SpeechLanguage } from '../../services/speech.service';
 
 const { width } = Dimensions.get('window');
 const GUIDE_SIZE = width * 0.72;
+
+// ── Auto-detect tuning constants ──
+const AUTO_CAPTURE_INTERVAL = 1500;      // ms between auto-captures
+const POSE_CHANGE_THRESHOLD = 0.035;     // min avg landmark movement to count as "new pose"
+const STABILITY_FRAMES = 2;              // consecutive similar frames before we accept a pose
+const DUPLICATE_LETTER_COOLDOWN = 2000;  // ms before accepting the same letter again
+
+/** Calculate average Euclidean distance between two landmark arrays */
+function landmarkDistance(
+    a: { x: number; y: number; z: number }[],
+    b: { x: number; y: number; z: number }[],
+): number {
+    if (a.length !== b.length || a.length === 0) return Infinity;
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) {
+        const dx = a[i].x - b[i].x;
+        const dy = a[i].y - b[i].y;
+        const dz = a[i].z - b[i].z;
+        sum += Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    return sum / a.length;
+}
 
 export default function TSLCameraScreen() {
     const insets = useSafeAreaInsets();
@@ -44,6 +72,16 @@ export default function TSLCameraScreen() {
 
     // Sentence builder state
     const [sentence, setSentence] = useState('');
+
+    // Auto-detect state
+    const [autoMode, setAutoMode] = useState(false);
+    const autoModeRef = useRef(false);   // non-stale ref for async loop
+    const prevLandmarksRef = useRef<{ x: number; y: number; z: number }[] | null>(null);
+    const stableCountRef = useRef(0);
+    const lastAcceptedLetterRef = useRef('');
+    const lastAcceptedTimeRef = useRef(0);
+    const autoLoopRunningRef = useRef(false);
+    const pulseAnim = useRef(new Animated.Value(1)).current;
 
     const cameraRef = useRef<CameraView>(null);
     const detectorRef = useRef<HandDetectorRef>(null);
@@ -83,6 +121,181 @@ export default function TSLCameraScreen() {
             }),
         ]).start();
     }, [letterPopAnim]);
+
+    // ── Auto-detect pulse animation ──
+    useEffect(() => {
+        let anim: Animated.CompositeAnimation;
+        if (autoMode) {
+            anim = Animated.loop(
+                Animated.sequence([
+                    Animated.timing(pulseAnim, {
+                        toValue: 1.15,
+                        duration: 800,
+                        easing: Easing.inOut(Easing.ease),
+                        useNativeDriver: true,
+                    }),
+                    Animated.timing(pulseAnim, {
+                        toValue: 1,
+                        duration: 800,
+                        easing: Easing.inOut(Easing.ease),
+                        useNativeDriver: true,
+                    }),
+                ]),
+            );
+            anim.start();
+        } else {
+            pulseAnim.setValue(1);
+        }
+        return () => anim?.stop();
+    }, [autoMode, pulseAnim]);
+
+    // ── Single auto-capture cycle ──
+    const runSingleAutoCapture = useCallback(async () => {
+        if (!cameraRef.current || !detectorRef.current || !autoModeRef.current) return;
+
+        try {
+            const photo = await cameraRef.current.takePictureAsync({
+                quality: 0.6,     // lower quality for speed
+                base64: true,
+            });
+            if (!photo?.base64 || !autoModeRef.current) return;
+
+            const detection = await detectorRef.current.detectFromBase64(photo.base64);
+            if (!autoModeRef.current) return;
+
+            // No hand detected — reset stability counter
+            if (!detection) {
+                prevLandmarksRef.current = null;
+                stableCountRef.current = 0;
+                setStatusText('Show your hand sign');
+                return;
+            }
+
+            const newLandmarks = detection.landmarks;
+
+            // First frame or returning after no-hand
+            if (!prevLandmarksRef.current) {
+                prevLandmarksRef.current = newLandmarks;
+                stableCountRef.current = 1;
+                setStatusText('Hold steady...');
+                return;
+            }
+
+            const dist = landmarkDistance(newLandmarks, prevLandmarksRef.current);
+
+            if (dist > POSE_CHANGE_THRESHOLD) {
+                // Hand moved significantly — new pose candidate
+                prevLandmarksRef.current = newLandmarks;
+                stableCountRef.current = 1;
+                setStatusText('New pose detected — hold...');
+                return;
+            }
+
+            // Hand is stable in this position
+            stableCountRef.current += 1;
+
+            if (stableCountRef.current < STABILITY_FRAMES) {
+                setStatusText('Hold steady...');
+                return;
+            }
+
+            // Stable long enough — send to API
+            stableCountRef.current = 0; // reset so we don't re-send the same pose
+            setStatusText('Recognizing...');
+
+            const response = await apiService.predictSign(detection.landmarks);
+            if (!autoModeRef.current) return;
+
+            if (response.error) {
+                setStatusText('Auto-detect active');
+                return;
+            }
+
+            const letter = response.letter || '';
+            const conf = response.confidence || detection.confidence;
+
+            if (!letter || letter === 'Unknown') {
+                setStatusText('Auto-detect active');
+                return;
+            }
+
+            // Duplicate suppression — same letter within cooldown
+            const now = Date.now();
+            if (
+                letter === lastAcceptedLetterRef.current &&
+                now - lastAcceptedTimeRef.current < DUPLICATE_LETTER_COOLDOWN
+            ) {
+                setStatusText(`Holding "${letter}" — move hand for next`);
+                return;
+            }
+
+            // Accept this letter!
+            lastAcceptedLetterRef.current = letter;
+            lastAcceptedTimeRef.current = now;
+            prevLandmarksRef.current = newLandmarks;
+
+            setLastLetter(letter);
+            setConfidence(conf);
+            setStatusText(`Auto: ${letter}`);
+            animateLetterPop();
+
+            setSentence(prev => prev + letter);
+
+            if (isSpeechEnabled) {
+                speechService.speak(letter);
+            }
+
+            setTimeout(() => {
+                sentenceScrollRef.current?.scrollToEnd({ animated: true });
+            }, 100);
+
+        } catch (err) {
+            console.log('Auto-capture cycle error (non-fatal):', err);
+        }
+    }, [animateLetterPop, isSpeechEnabled]);
+
+    // ── Auto-capture loop ──
+    useEffect(() => {
+        if (!autoMode || !isDetectorReady) {
+            autoLoopRunningRef.current = false;
+            return;
+        }
+
+        let timer: ReturnType<typeof setTimeout>;
+        autoLoopRunningRef.current = true;
+
+        const loop = async () => {
+            if (!autoModeRef.current) return;
+            await runSingleAutoCapture();
+            if (autoModeRef.current) {
+                timer = setTimeout(loop, AUTO_CAPTURE_INTERVAL);
+            }
+        };
+
+        setStatusText('Auto-detect active');
+        loop();
+
+        return () => {
+            autoLoopRunningRef.current = false;
+            clearTimeout(timer);
+        };
+    }, [autoMode, isDetectorReady, runSingleAutoCapture]);
+
+    // ── Toggle auto mode ──
+    const toggleAutoMode = useCallback(() => {
+        setAutoMode(prev => {
+            const next = !prev;
+            autoModeRef.current = next;
+            if (!next) {
+                // Turning off — clean up
+                prevLandmarksRef.current = null;
+                stableCountRef.current = 0;
+                lastAcceptedLetterRef.current = '';
+                setStatusText('Show your hand sign');
+            }
+            return next;
+        });
+    }, []);
 
     const onDetectorReady = () => {
         setIsDetectorReady(true);
@@ -378,39 +591,73 @@ export default function TSLCameraScreen() {
                                     {!isDetectorReady && (
                                         <ActivityIndicator size="small" color="#0EA5E9" style={{ marginRight: 4 }} />
                                     )}
-                                    <View style={[styles.statusDot, isDetectorReady ? styles.dotReady : styles.dotLoading]} />
+                                    <View style={[
+                                        styles.statusDot,
+                                        autoMode ? styles.dotAuto : (isDetectorReady ? styles.dotReady : styles.dotLoading),
+                                    ]} />
                                     <Text style={styles.statusLabel}>
-                                        {isDetectorReady ? 'Ready' : 'Loading'}
+                                        {autoMode ? 'Auto' : isDetectorReady ? 'Ready' : 'Loading'}
                                     </Text>
                                 </View>
 
-                                <TouchableOpacity style={styles.topButton} onPress={toggleSpeech}>
-                                    <LinearGradient
-                                        colors={
-                                            isSpeechEnabled
-                                                ? ['rgba(14,165,233,0.9)', 'rgba(6,182,212,0.9)']
-                                                : ['rgba(156,163,175,0.9)', 'rgba(107,114,128,0.9)']
-                                        }
-                                        style={styles.topButtonGradient}
+                                <View style={styles.topButtonGroup}>
+                                    {/* Auto-detect toggle */}
+                                    <TouchableOpacity
+                                        style={styles.topButton}
+                                        onPress={toggleAutoMode}
+                                        disabled={!isDetectorReady}
                                     >
-                                        <Ionicons
-                                            name={isSpeechEnabled ? 'volume-high' : 'volume-mute'}
-                                            size={22}
-                                            color="#fff"
-                                        />
-                                    </LinearGradient>
-                                </TouchableOpacity>
+                                        <Animated.View style={{ transform: [{ scale: autoMode ? pulseAnim : 1 }] }}>
+                                            <LinearGradient
+                                                colors={
+                                                    autoMode
+                                                        ? ['rgba(34,197,94,0.95)', 'rgba(16,185,129,0.95)']
+                                                        : ['rgba(100,116,139,0.8)', 'rgba(71,85,105,0.8)']
+                                                }
+                                                style={styles.topButtonGradient}
+                                            >
+                                                <Ionicons
+                                                    name={autoMode ? 'scan' : 'scan-outline'}
+                                                    size={22}
+                                                    color="#fff"
+                                                />
+                                            </LinearGradient>
+                                        </Animated.View>
+                                    </TouchableOpacity>
+
+                                    {/* Sound toggle */}
+                                    <TouchableOpacity style={styles.topButton} onPress={toggleSpeech}>
+                                        <LinearGradient
+                                            colors={
+                                                isSpeechEnabled
+                                                    ? ['rgba(14,165,233,0.9)', 'rgba(6,182,212,0.9)']
+                                                    : ['rgba(156,163,175,0.9)', 'rgba(107,114,128,0.9)']
+                                            }
+                                            style={styles.topButtonGradient}
+                                        >
+                                            <Ionicons
+                                                name={isSpeechEnabled ? 'volume-high' : 'volume-mute'}
+                                                size={22}
+                                                color="#fff"
+                                            />
+                                        </LinearGradient>
+                                    </TouchableOpacity>
+                                </View>
                             </View>
 
                             {/* Guide box */}
                             <View style={styles.guideArea}>
-                                <View style={styles.guideBorder}>
+                                <Animated.View style={[
+                                    styles.guideBorder,
+                                    autoMode && styles.guideBorderAuto,
+                                    autoMode && { transform: [{ scale: pulseAnim }] },
+                                ]}>
                                     {/* Corner accents */}
-                                    <View style={[styles.corner, styles.cornerTL]} />
-                                    <View style={[styles.corner, styles.cornerTR]} />
-                                    <View style={[styles.corner, styles.cornerBL]} />
-                                    <View style={[styles.corner, styles.cornerBR]} />
-                                </View>
+                                    <View style={[styles.corner, styles.cornerTL, autoMode && styles.cornerAuto]} />
+                                    <View style={[styles.corner, styles.cornerTR, autoMode && styles.cornerAuto]} />
+                                    <View style={[styles.corner, styles.cornerBL, autoMode && styles.cornerAuto]} />
+                                    <View style={[styles.corner, styles.cornerBR, autoMode && styles.cornerAuto]} />
+                                </Animated.View>
                                 <Text style={styles.guideText}>{statusText}</Text>
                             </View>
 
@@ -436,30 +683,60 @@ export default function TSLCameraScreen() {
 
                             {/* Capture button row */}
                             <View style={styles.captureRow}>
-                                <TouchableOpacity
-                                    style={styles.captureButton}
-                                    onPress={handleCapture}
-                                    disabled={isCapturing}
-                                    activeOpacity={0.8}
-                                >
-                                    <LinearGradient
-                                        colors={
-                                            isCapturing
-                                                ? ['#6B7280', '#9CA3AF']
-                                                : ['#0EA5E9', '#06B6D4']
-                                        }
-                                        style={styles.captureGradient}
+                                {autoMode ? (
+                                    /* ── Auto-mode: pulsing indicator + stop button ── */
+                                    <View style={styles.autoCaptureWrap}>
+                                        <Animated.View style={{ opacity: pulseAnim }}>
+                                            <LinearGradient
+                                                colors={['#22C55E', '#16A34A']}
+                                                style={styles.captureGradient}
+                                            >
+                                                {isCapturing ? (
+                                                    <ActivityIndicator size="large" color="#fff" />
+                                                ) : (
+                                                    <View style={styles.captureContent}>
+                                                        <Ionicons name="scan" size={28} color="#fff" />
+                                                        <Text style={styles.captureLabel}>Auto</Text>
+                                                    </View>
+                                                )}
+                                            </LinearGradient>
+                                        </Animated.View>
+                                        <TouchableOpacity
+                                            style={styles.stopAutoBtn}
+                                            onPress={toggleAutoMode}
+                                            activeOpacity={0.7}
+                                        >
+                                            <Ionicons name="stop-circle" size={20} color="#EF4444" />
+                                            <Text style={styles.stopAutoLabel}>Stop</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                ) : (
+                                    /* ── Manual capture button ── */
+                                    <TouchableOpacity
+                                        style={styles.captureButton}
+                                        onPress={handleCapture}
+                                        disabled={isCapturing}
+                                        activeOpacity={0.8}
                                     >
-                                        {isCapturing ? (
-                                            <ActivityIndicator size="large" color="#fff" />
-                                        ) : (
-                                            <View style={styles.captureContent}>
-                                                <Ionicons name="hand-left" size={28} color="#fff" />
-                                                <Text style={styles.captureLabel}>Capture</Text>
-                                            </View>
-                                        )}
-                                    </LinearGradient>
-                                </TouchableOpacity>
+                                        <LinearGradient
+                                            colors={
+                                                isCapturing
+                                                    ? ['#6B7280', '#9CA3AF']
+                                                    : ['#0EA5E9', '#06B6D4']
+                                            }
+                                            style={styles.captureGradient}
+                                        >
+                                            {isCapturing ? (
+                                                <ActivityIndicator size="large" color="#fff" />
+                                            ) : (
+                                                <View style={styles.captureContent}>
+                                                    <Ionicons name="hand-left" size={28} color="#fff" />
+                                                    <Text style={styles.captureLabel}>Capture</Text>
+                                                </View>
+                                            )}
+                                        </LinearGradient>
+                                    </TouchableOpacity>
+                                )}
                             </View>
                         </View>
                     </CameraView>
@@ -835,5 +1112,42 @@ const styles = StyleSheet.create({
         color: '#fff',
         fontSize: 10,
         fontWeight: 'bold',
+    },
+
+    // ─── Auto-mode styles ───
+    autoCaptureWrap: {
+        alignItems: 'center',
+        gap: 10,
+    },
+    stopAutoBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        backgroundColor: 'rgba(239,68,68,0.15)',
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        borderRadius: 20,
+        borderWidth: 1,
+        borderColor: 'rgba(239,68,68,0.3)',
+    },
+    stopAutoLabel: {
+        color: '#EF4444',
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    dotAuto: {
+        backgroundColor: '#22C55E',
+    },
+    guideBorderAuto: {
+        borderColor: 'rgba(34,197,94,0.5)',
+        borderStyle: 'solid' as any,
+    },
+    cornerAuto: {
+        borderColor: '#22C55E',
+    },
+    topButtonGroup: {
+        flexDirection: 'row' as const,
+        alignItems: 'center',
+        gap: 10,
     },
 });
